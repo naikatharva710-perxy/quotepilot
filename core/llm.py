@@ -17,10 +17,15 @@ from typing import Any
 
 # Preference order. The key's actual model list decides what is used (see available_models).
 # 2.5 models are only served to projects that used them before, so they come last.
-DEFAULT_MODELS = ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-3-flash-preview", "gemini-3.5-flash-lite",
-                  "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
-_DEAD: set[str] = set()          # models that returned not-found / no-access / zero quota this process
+# Live test (13 Oct): 3.6/3.8 Flash returned 503 "high demand" on every call; 3-flash-preview answered.
+DEFAULT_MODELS = ["gemini-3-flash-preview", "gemini-3.5-flash", "gemini-flash-latest", "gemini-3.6-flash",
+                  "gemini-3.8-flash", "gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-flash-lite-latest",
+                  "gemini-2.5-flash", "gemini-2.5-flash-lite"]
+_DEAD: set[str] = set()              # not-found / no-access / zero quota: never retried this process
+_COOLDOWN: dict[str, float] = {}     # model -> time until which it is tried last (503 overloaded)
+_LAST_GOOD: str | None = None        # stick with the model that last worked, for consistent extraction
 _AVAILABLE: list[str] | None = None
+REQUEST_TIMEOUT_MS = 120_000
 
 
 class LLMUnavailable(RuntimeError):
@@ -114,7 +119,16 @@ def models() -> list[str]:
         listed = [m for m in order if m in avail]
         if listed:
             order = listed
+    if _LAST_GOOD in order:
+        order = [_LAST_GOOD] + [m for m in order if m != _LAST_GOOD]
+    now = time.time()
+    order = [m for m in order if _COOLDOWN.get(m, 0) <= now] + [m for m in order if _COOLDOWN.get(m, 0) > now]
     return [m for m in order if m not in _DEAD] or order
+
+
+def _retry_delay(msg: str) -> float:
+    m = re.search(r"retryDelay['\"]?:\s*['\"]?(\d+(?:\.\d+)?)s", msg)
+    return min(float(m.group(1)) + 1, 45.0) if m else 10.0
 
 
 def _stderr(msg: str) -> None:
@@ -131,7 +145,8 @@ def client():
         raise LLMUnavailable("No GEMINI_API_KEY configured")
     if _client is None:
         from google import genai
-        _client = genai.Client(api_key=key)
+        from google.genai import types
+        _client = genai.Client(api_key=key, http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT_MS))
     return _client
 
 
@@ -165,6 +180,7 @@ def generate(task: str, prompt: str, *, system: str | None = None, files: list[t
     if as_json:
         cfg["response_mime_type"] = "application/json"
 
+    global _LAST_GOOD
     last_err: Exception | None = None
     for model in models():
         for attempt in range(max_retries + 1):
@@ -176,6 +192,7 @@ def generate(task: str, prompt: str, *, system: str | None = None, files: list[t
                 text = resp.text or ""
                 out = _parse_json(text) if as_json else text
                 _log(TraceEntry(task, model, round(time.time() - t0, 1), True, prompt[:600], text[:600], labels))
+                _LAST_GOOD = model
                 return out
             except errors.APIError as e:  # type: ignore[attr-defined]
                 last_err = e
@@ -186,8 +203,11 @@ def generate(task: str, prompt: str, *, system: str | None = None, files: list[t
                 if e.code in (403, 404) or zero_quota or (e.code == 400 and "not supported" in msg.lower()):
                     _DEAD.add(model)
                     break
-                if e.code == 429 and attempt < max_retries:
-                    time.sleep(8 * (attempt + 1))
+                if e.code in (500, 503, 504):
+                    _COOLDOWN[model] = time.time() + 180   # overloaded: try others first for 3 minutes
+                    break
+                if e.code == 429 and attempt < 1:
+                    time.sleep(_retry_delay(msg))          # per-minute free-tier quota: wait as told, once
                     continue
                 if e.code in (400,) and "API key" in str(e):
                     raise LLMUnavailable("The Gemini API key was rejected") from e
