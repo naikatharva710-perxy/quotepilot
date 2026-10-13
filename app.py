@@ -594,8 +594,11 @@ def page_review():
             if c.button("Save", key=f"s_{key}"):
                 action = {"Accept": "accept", "Correct": "override", "Reject": "reject"}[act]
                 S.decisions[(r.line_id, r.vendor_id)] = {"action": action, "value": val, "note": note, "via": "individual"}
+                # Accepting a per-kg price accepts our weight estimate: disclose it, same wording as bulk accept.
+                est = action == "accept" and any(review.uses_estimated_weight(f) for f in (r["flags"] or []))
                 log(f"Cell {action}", f"{r.line_id}/{r.vendor}: {note or '(no note)'}" + (f" → ₹{val:.2f}" if action == "override" else "")
-                    + f"; was {inr(r.unit_price_inr)}; source {r.source_file}, {r.source_ref}: \"{str(r.source_quote or '')[:80]}\"")
+                    + f"; was {inr(r.unit_price_inr)}" + (f" ({review.ESTIMATED_WEIGHT_NOTE})" if est else "")
+                    + f"; source {r.source_file}, {r.source_ref}: \"{str(r.source_quote or '')[:80]}\"")
                 st.rerun()
     st.divider()
     st.markdown("### Ask the vendor instead of guessing")

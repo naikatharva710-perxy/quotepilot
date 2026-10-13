@@ -73,3 +73,50 @@ def test_ambiguous_cells_show_individual_decision_chip(app):
     chips = [m.value for m in at.markdown if "Needs your individual decision" in m.value]
     assert len(chips) >= 8
     assert not any("nan" in c for c in chips)
+
+
+# ---------------------------------------------------------------- individual decisions: audit log wording
+
+EST = "(price uses our estimated box weight; the vendor has not supplied or confirmed it)"
+
+
+def _decide(at, lid, vid, decision, note, value=None):
+    """Make one individual decision on the Review queue card for (lid, vid); return its audit log entry."""
+    key = f"{lid}_{vid}"
+    at.radio(key=f"a_{key}").set_value(decision).run()
+    if value is not None:
+        at.number_input(key=f"v_{key}").set_value(value).run()
+    at.text_input(key=f"n_{key}").input(note).run()
+    at.button(key=f"s_{key}").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    entries = [a for a in at.session_state["audit"] if a["detail"].startswith(f"{lid}/")]
+    assert len(entries) == 1, entries
+    return entries[0]
+
+
+def test_individual_accept_of_per_kg_price_discloses_estimated_weight(app):
+    at = goto(app, "Review queue")
+    e = _decide(at, "L23", "V5", "Accept", "checked partition spec")
+    assert e["action"] == "Cell accept"
+    assert e["detail"].startswith("L23/Chakan Boxcraft Solutions: checked partition spec; was ₹")   # note + previous price kept
+    assert EST in e["detail"]
+    assert e["detail"].endswith('; source V5_file, line 8: "38 for the 3-ply"')                     # source + quote kept
+    assert at.session_state["decisions"][("L23", "V5")]["via"] == "individual"
+
+
+def test_ordinary_individual_decisions_have_no_estimated_weight_disclosure(app):
+    at = goto(app, "Review queue")
+    # Not a per-kg price: Krishnai's smudged L14 and Meridian's spec-swap L09
+    k = _decide(at, "L14", "V4", "Accept", "confirmed 17.00 by phone")
+    assert k["detail"].startswith("L14/Krishnai Pack Industries: confirmed 17.00 by phone; was ₹")
+    assert k["detail"].endswith('; source V4_file, x: "q"') and "estimated box weight" not in k["detail"]
+    m = _decide(at, "L09", "V1", "Reject", "3-ply not acceptable")
+    assert m["action"] == "Cell reject" and "estimated box weight" not in m["detail"]
+    # A per-kg cell that is corrected or rejected no longer relies on our weight estimate: no disclosure
+    c = _decide(at, "L24", "V5", "Correct", "vendor confirmed price", value=4.10)
+    assert c["action"] == "Cell override" and "→ ₹4.10" in c["detail"] and "estimated box weight" not in c["detail"]
+    r = _decide(at, "L25", "V5", "Reject", "not covered by 3-ply rate")
+    assert r["action"] == "Cell reject" and "estimated box weight" not in r["detail"]
+    # and the previous-price / source format is unchanged for all of them
+    for e in (k, m, c, r):
+        assert "; was ₹" in e["detail"] and "; source " in e["detail"]
