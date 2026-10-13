@@ -14,7 +14,7 @@ import plotly.express as px
 import streamlit as st
 from PIL import Image
 
-from core import analyst, award, copilot, ingest, llm, normalize, pipeline
+from core import analyst, award, copilot, ingest, llm, normalize, pipeline, review
 
 st.set_page_config(page_title="QuotePilot", page_icon="📦", layout="wide")
 
@@ -337,23 +337,36 @@ def page_send():
                 go("Compare")
 
 
-def style_matrix(df: pd.DataFrame, value_col: str):
-    piv = df.pivot_table(index=["line_id", "item"], columns="vendor", values=value_col, aggfunc="first")
-    piv = piv.reindex(columns=sorted(df.vendor.unique())).apply(pd.to_numeric, errors="coerce")
+def matrix_display(df: pd.DataFrame, value_col: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Display grid as text ('-' for missing) plus a matching CSS grid. Display only: df itself keeps NaN,
+    so calculations, analysis and exports never see the '-'."""
+    piv = df.pivot_table(index=["line_id", "item"], columns="vendor", values=value_col, aggfunc="first", dropna=False)
+    piv = piv.reindex(columns=sorted(df.vendor.unique()))
+    piv = piv.reindex(pd.MultiIndex.from_frame(df[["line_id", "item"]].drop_duplicates().sort_values("line_id")))
     status = {(r.line_id, r.vendor): r.status for r in df[["line_id", "vendor", "status"]].itertuples()}
     usable_min = df[df.usable].groupby("line_id")[value_col].min().to_dict()
+    text = pd.DataFrame("-", index=piv.index, columns=piv.columns)
     css = pd.DataFrame("", index=piv.index, columns=piv.columns)
     for (lid, item) in piv.index:
         for v in piv.columns:
+            val = pd.to_numeric(piv.at[(lid, item), v], errors="coerce")
             s_ = status.get((lid, v))
-            c = f"background-color:{STATUS_COLOR.get(s_, '#FFFFFF')};"
-            val = piv.at[(lid, item), v]
+            if pd.notna(val):
+                text.at[(lid, item), v] = f"{val:,.2f}"
+            c = f"background-color:{STATUS_COLOR.get(s_, '#FFFFFF')}; text-align:right;"
             if s_ in ("OK", "CONFIRMED") and pd.notna(val) and abs(val - usable_min.get(lid, -1)) < 1e-6:
                 c += "font-weight:700; border:2px solid #9A6631;"
             if s_ == "REVIEW":
                 c += "font-style:italic; color:#6B4A0B;"
+            if pd.isna(val):
+                c += "color:#8A8F8C;"
             css.at[(lid, item), v] = c
-    return piv.style.apply(lambda _: css, axis=None).format(lambda v: "-" if pd.isna(v) else f"{v:,.2f}")
+    return text, css
+
+
+def style_matrix(df: pd.DataFrame, value_col: str):
+    text, css = matrix_display(df, value_col)
+    return text.style.apply(lambda _: css, axis=None)
 
 
 def cell_inspector(df: pd.DataFrame):
@@ -463,28 +476,27 @@ def page_review():
     if q.empty:
         st.success("Nothing waiting for review.")
     else:
-        # Same reason, same vendor: decide once. Typical case: a per-kg rate converted with our weight estimate.
-        q["reason_key"] = q["flags"].apply(lambda f: f[0].split(":")[0][:70] if f else "Other")
-        groups = q.groupby(["vendor_id", "vendor", "reason_key"]).size().reset_index(name="n")
-        groups = groups[groups.n >= 3]
+        # Same reason, same vendor: decide once. Only cells the reader was sure about are eligible;
+        # ambiguous, low-confidence, deviating or outlier cells always need an individual decision.
+        groups = review.bulk_groups(q)
         if len(groups):
             st.markdown("### Decide in bulk")
             for _, g in groups.iterrows():
                 cc = st.columns([3, 1])
-                cc[0].markdown(f"**{g.vendor}**: {g.n} cells, *{g.reason_key}*")
-                if cc[1].button(f"Accept all {g.n}", key=f"bulk_{g.vendor_id}_{hash(g.reason_key)}"):
-                    sel = q[(q.vendor_id == g.vendor_id) & (q.reason_key == g.reason_key)]
-                    for _, r in sel.iterrows():
-                        S.decisions[(r.line_id, r.vendor_id)] = {"action": "accept", "value": r.unit_price_inr,
-                                                                 "note": f"Bulk accept: {g.reason_key}"}
-                    log("Bulk accept", f"{g.vendor}: {g.n} cells ({g.reason_key})")
+                held = f" {g.held_back} similar cells need individual decisions and are not included." if g.held_back else ""
+                cc[0].markdown(f"**{g.vendor}**: {g.n} cells, *{g.reason_key}*. {', '.join(g.line_ids)}.{held}")
+                if cc[1].button(f"Accept these {g.n}", key=f"bulk_{g.vendor_id}_{abs(hash(g.reason_key))}"):
+                    review.bulk_accept(q, g.vendor_id, g.reason_key, S.decisions, log)
                     st.rerun()
             st.markdown("### One by one")
+        q = review.annotate(q)
     for _, r in q.head(40).iterrows():
         with st.container(border=True):
             a, b, c = st.columns([2.2, 1.2, 1.6])
             a.markdown(f"**{r.line_id} · {r['item']}**  \n{r.vendor}")
             a.markdown("<br>".join(f"<span class='qd-small'>• {f}</span>" for f in r["flags"]), unsafe_allow_html=True)
+            if review.blocked(r.get("bulk_block")) and r["bulk_block"] != "not awaiting review":
+                a.markdown(f"<span class='qd-chip review'>Needs your individual decision: {r['bulk_block']}</span>", unsafe_allow_html=True)
             b.markdown(f"**{inr(r.landed_price_inr)}** /pc  \n<span class='qd-small'>{lakh(r.value_at_stake) if pd.notna(r.value_at_stake) else '-'} a year</span>",
                        unsafe_allow_html=True)
             if r.source_quote:
@@ -496,8 +508,9 @@ def page_review():
             note = c.text_input("Note", key=f"n_{key}", placeholder="Why (goes in the audit log)")
             if c.button("Save", key=f"s_{key}"):
                 action = {"Accept": "accept", "Correct": "override", "Reject": "reject"}[act]
-                S.decisions[(r.line_id, r.vendor_id)] = {"action": action, "value": val, "note": note}
-                log(f"Cell {action}", f"{r.line_id}/{r.vendor}: {note or '(no note)'}" + (f" → ₹{val:.2f}" if action == "override" else ""))
+                S.decisions[(r.line_id, r.vendor_id)] = {"action": action, "value": val, "note": note, "via": "individual"}
+                log(f"Cell {action}", f"{r.line_id}/{r.vendor}: {note or '(no note)'}" + (f" → ₹{val:.2f}" if action == "override" else "")
+                    + f"; was {inr(r.unit_price_inr)}; source {r.source_file}, {r.source_ref}: \"{str(r.source_quote or '')[:80]}\"")
                 st.rerun()
     st.divider()
     st.markdown("### Ask the vendor instead of guessing")

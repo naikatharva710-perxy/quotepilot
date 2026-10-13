@@ -158,6 +158,7 @@ def normalise(rfx: dict, extractions: dict[str, dict], history: pd.DataFrame, a:
                 source_file=ex.get("_source_file"), source_ref=ln.get("source_ref"),
                 source_quote=ln.get("source_quote"), bbox=ln.get("bbox"),
                 spec_deviation=ln.get("spec_deviation"), vendor_description=ln.get("vendor_description"),
+                uncertainty=ln.get("uncertainty_reason"),
             ))
     df = pd.DataFrame(rows)
     if df.empty:
@@ -185,11 +186,16 @@ def normalise(rfx: dict, extractions: dict[str, dict], history: pd.DataFrame, a:
     # Buyer decisions
     df["decision"] = None
     df["decision_note"] = None
+    from .review import bulk_block_reason
     for (lid, vid), d in decisions.items():
         m = (df.line_id == lid) & (df.vendor_id == vid)
         if not m.any():
             continue
         idx = df[m].index[0]
+        if d.get("via") == "bulk" and bulk_block_reason(df.loc[idx].to_dict()):
+            # A bulk accept can never confirm a cell that needs an individual decision, whatever the UI sent.
+            df.at[idx, "decision"] = "blocked bulk accept"
+            continue
         df.at[idx, "decision"] = d["action"]
         df.at[idx, "decision_note"] = d.get("note")
         if d["action"] == "accept" and df.at[idx, "unit_price_inr"] is not None and pd.notna(df.at[idx, "unit_price_inr"]):
