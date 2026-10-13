@@ -47,6 +47,8 @@ Guidance:
 - "Cheapest per line" / "split award": for each line pick the vendor with minimum landed_price_inr (use QUALIFY or ROW_NUMBER).
 - "Vendors who cleared the quality questionnaire" means vendors.cleared_quality = TRUE.
 - If the question is about coverage, gaps, data quality or why something is missing, use quotes_all.
+- Filter vendors by vendor_id (see VENDORS below), never by an exact or partial vendor name.
+- A question about one line or vendor that is not yet usable must use quotes_all, so REVIEW/MISSING cells are visible.
 - Always include line_id, vendor_id and vendor columns when rows are per line (the app attaches source evidence by them).
   Round money to 2 decimals.
 - Keep result to at most 60 rows; aggregate when sensible.
@@ -242,6 +244,7 @@ def result_totals(result: pd.DataFrame | None) -> dict:
     if result is None or not len(result):
         return {}
     num = result.select_dtypes("number")
+    num = num[[c for c in num.columns if re.search(r"annual|value|total|spend|qty|quantity|saving|count|lines", c, re.I)]]
     out: dict = {"rows": len(result), "column_totals": {c: round(float(num[c].sum()), 2) for c in num.columns}}
     key = "vendor" if "vendor" in result.columns else ("vendor_id" if "vendor_id" in result.columns else None)
     if key and len(num.columns):
@@ -312,7 +315,8 @@ def ask(question: str, con, history_msgs: list[dict], fact_pack: dict, df: pd.Da
            "notes": [], "figures_found": [], "figures_unverified": [], "explain_failed": False, "failed_step": None}
     convo = "\n".join(f"{m['role']}: {m['content'][:400]}" for m in history_msgs[-6:])
     try:
-        plan = llm.generate("analyst:plan", PLANNER + f"\n\nRecent conversation:\n{convo}\n\nQUESTION: {question}")
+        vendors = "" if df is None else "\n".join(f"{i} = {n}" for i, n in df[["vendor_id", "vendor"]].drop_duplicates().values)
+        plan = llm.generate("analyst:plan", PLANNER + f"\n\nVENDORS (vendor_id = vendor):\n{vendors}\n\nRecent conversation:\n{convo}\n\nQUESTION: {question}")
     except Exception as e:
         out.update(answer="The model could not be reached to plan this question, so nothing was computed. Try again shortly.",
                    failed_step="plan")
@@ -340,6 +344,11 @@ def ask(question: str, con, history_msgs: list[dict], fact_pack: dict, df: pd.Da
         out["failed_step"] = None if plan.get("cannot_answer") else "query"
         return out
     out["table"] = result
+    if not len(result):
+        out["answer"] = ("The query matched no rows. That is not evidence that a vendor did not quote or that a value is missing: "
+                         "the filter may be wrong. Check the SQL below, or rephrase with the line id and vendor.")
+        out["failed_step"] = "empty"
+        return out
     if df is not None:
         out["evidence"], out["evidence_note"] = evidence_for(result, df)
         out["notes"] = exclusion_notes(df, result, discounts_df)

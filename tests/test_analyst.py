@@ -249,3 +249,32 @@ def test_real_run_vp_question_matches_award_page(monkeypatch):
     assert round(out["table"].annual_value_inr.sum(), 0) == expected["total_inr"]
     assert set(out["table"].vendor_id) == set(vdf[vdf.cleared_quality].vendor_id)
     assert out["evidence"].matches_result.all() and out["evidence"].source_quote.notna().all()
+
+
+# ---------------------------------------------------------------- live failure 14 Oct: partial vendor name -> 0 rows -> "no quote"
+
+def test_empty_result_is_not_presented_as_missing_quote(monkeypatch):
+    _, _, df, _, con, fp = _data()
+    calls = _mock(monkeypatch, plan={"sql": "SELECT line_id, vendor, status FROM quotes_all WHERE line_id = 'L23' AND vendor = 'Chakan Boxcraft'"},
+                  explain="Chakan has not provided a quote for L23.")
+    out = analyst.ask("What did Chakan quote for L23?", con, [], fp, df=df, discounts_df=DISCOUNTS)
+    assert out["failed_step"] == "empty" and "not evidence" in out["answer"]
+    assert "has not provided a quote" not in out["answer"]
+    assert "analyst:explain" not in calls                                  # no model call spent on an empty result
+
+
+def test_planner_is_given_vendor_ids(monkeypatch):
+    _, _, df, _, con, fp = _data()
+    seen = {}
+
+    def fake(task, prompt, **kw):
+        seen[task] = prompt
+        return {"sql": None, "cannot_answer": "x"}
+    monkeypatch.setattr(llm, "generate", fake)
+    analyst.ask("What did Chakan quote for L23?", con, [], fp, df=df, discounts_df=DISCOUNTS)
+    assert "V5 = Chakan Boxcraft Solutions" in seen["analyst:plan"] and "never by an exact or partial vendor name" in seen["analyst:plan"]
+
+
+def test_totals_skip_per_piece_prices():
+    t = analyst.result_totals(pd.DataFrame({"vendor": ["A", "A"], "landed_price_inr": [10.0, 20.0], "annual_value_inr": [100.0, 200.0]}))
+    assert "landed_price_inr" not in t["column_totals"] and t["column_totals"]["annual_value_inr"] == 300.0
