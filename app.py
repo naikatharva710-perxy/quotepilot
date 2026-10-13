@@ -119,7 +119,11 @@ def compute():
     """Everything downstream of the AI run is recomputed deterministically from state."""
     if not S.run or not S.rfx:
         return None
+    if not S.run.get("extractions"):
+        return None
     df = normalize.normalise(S.rfx, S.run["extractions"], S.history, S.assume, S.decisions)
+    if df.empty:
+        return None
     vdf, adf = pipeline.vendor_tables(S.rfx, S.run, S.gate_overrides)
     disc = normalize.discounts(S.run["extractions"])
     ddf = pd.DataFrame(disc) if disc else pd.DataFrame(columns=["vendor_id", "description", "percent", "condition"])
@@ -137,6 +141,9 @@ with st.sidebar:
     page = st.radio("Go to", steps, label_visibility="collapsed", key="page")
     st.divider()
     st.markdown(f"AI reader: **{'on' if AI_ON else 'off - no key'}**")
+    _ok = [t for t in llm.trace() if t.ok]
+    if _ok:
+        st.caption(f"Last model used: {_ok[-1].model}")
     if S.run:
         st.markdown(f"Responses read: **{len(S.run['extractions'])}**")
     st.caption("Plumbing is stubbed (no real email). Extraction, reasoning and answers are live model calls.")
@@ -299,6 +306,8 @@ def page_send():
                             "cert": cert.name if cert else None, "cert_bytes": cert.getvalue() if cert else None})
             log("Reply added", f"{vname}: {up.name}"); st.rerun()
     st.divider()
+    if S.get("run_errors"):
+        st.error("The last AI read had problems:\n\n" + "\n".join(f"- {e}" for e in S.run_errors))
     cached = pipeline.load_cache()
     c1, c2 = st.columns([1, 1])
     with c1:
@@ -308,12 +317,14 @@ def page_send():
             bar = st.progress(0.0, "Starting")
             try:
                 run = pipeline.process(S.rfx, S.inbox, progress=lambda p, t: bar.progress(min(p, 1.0), t))
-                S.run = run; S.decisions = {}; S.chat = []
-                pipeline.save_cache(run)
+                S.run_errors = run["errors"]
                 log("Replies read", f"{len(run['extractions'])} extracted, {len(run['errors'])} errors")
-                if run["errors"]:
-                    st.warning("Some steps failed: " + "; ".join(run["errors"]))
-                go("Compare")
+                if run["extractions"]:
+                    S.run = run; S.decisions = {}; S.chat = []
+                    pipeline.save_cache(run)
+                    go("Compare")
+                else:
+                    st.rerun()
             except llm.LLMUnavailable as e:
                 st.error(f"The model could not be reached: {e}")
     with c2:
@@ -390,6 +401,10 @@ def page_compare():
     if res is None:
         st.info("Read the replies first (Send and collect)."); return
     df, vdf, adf, ddf = res
+    if S.get("run_errors"):
+        with st.expander(f"{len(S.run_errors)} step(s) failed during the AI read"):
+            for e in S.run_errors:
+                st.markdown(f"- {e}")
     counts = df.status.value_counts().to_dict()
     total = len(df)
     c = st.columns(5)

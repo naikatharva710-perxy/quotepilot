@@ -10,11 +10,17 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
-DEFAULT_MODELS = ["gemini-2.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash-lite"]
+# Preference order. The key's actual model list decides what is used (see available_models).
+# 2.5 models are only served to projects that used them before, so they come last.
+DEFAULT_MODELS = ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-3-flash-preview", "gemini-3.5-flash-lite",
+                  "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
+_DEAD: set[str] = set()          # models that returned not-found / no-access / zero quota this process
+_AVAILABLE: list[str] | None = None
 
 
 class LLMUnavailable(RuntimeError):
@@ -82,10 +88,37 @@ def api_key() -> str | None:
     return _secret("GEMINI_API_KEY")
 
 
+def available_models() -> list[str] | None:
+    """Ask the API which models this key can call. Cached; None if listing fails."""
+    global _AVAILABLE
+    if _AVAILABLE is None:
+        try:
+            names = []
+            for m in client().models.list():
+                actions = getattr(m, "supported_actions", None) or []
+                if not actions or "generateContent" in actions:
+                    names.append(str(m.name).replace("models/", ""))
+            _AVAILABLE = names
+            _stderr(f"available models: {', '.join(n for n in names if 'gemini' in n)[:600]}")
+        except Exception as e:
+            _stderr(f"model listing failed: {redact(e)}")
+            _AVAILABLE = []
+    return _AVAILABLE or None
+
+
 def models() -> list[str]:
     preferred = _secret("GEMINI_MODEL")
-    out = [preferred] if preferred else []
-    return out + [m for m in DEFAULT_MODELS if m not in out]
+    order = ([preferred] if preferred else []) + [m for m in DEFAULT_MODELS if m != preferred]
+    avail = available_models()
+    if avail:
+        listed = [m for m in order if m in avail]
+        if listed:
+            order = listed
+    return [m for m in order if m not in _DEAD] or order
+
+
+def _stderr(msg: str) -> None:
+    print(f"[quotepilot] {msg}", file=sys.stderr, flush=True)
 
 
 _client = None
@@ -136,6 +169,7 @@ def generate(task: str, prompt: str, *, system: str | None = None, files: list[t
     for model in models():
         for attempt in range(max_retries + 1):
             t0 = time.time()
+            text = ""
             try:
                 resp = client().models.generate_content(model=model, contents=parts,
                                                         config=types.GenerateContentConfig(**cfg))
@@ -146,6 +180,12 @@ def generate(task: str, prompt: str, *, system: str | None = None, files: list[t
             except errors.APIError as e:  # type: ignore[attr-defined]
                 last_err = e
                 _log(TraceEntry(task, model, round(time.time() - t0, 1), False, prompt[:300], redact(f"{e.code}: {str(e)[:300]}"), labels))
+                msg = str(e)
+                _stderr(redact(f"{task} on {model} failed: {e.code} {msg[:400]}"))
+                zero_quota = e.code == 429 and ("limit: 0" in msg or "limit\": 0" in msg)
+                if e.code in (403, 404) or zero_quota or (e.code == 400 and "not supported" in msg.lower()):
+                    _DEAD.add(model)
+                    break
                 if e.code == 429 and attempt < max_retries:
                     time.sleep(8 * (attempt + 1))
                     continue
@@ -155,7 +195,16 @@ def generate(task: str, prompt: str, *, system: str | None = None, files: list[t
             except (json.JSONDecodeError, ValueError) as e:
                 last_err = e
                 _log(TraceEntry(task, model, round(time.time() - t0, 1), False, prompt[:300], redact(f"bad JSON: {e}"), labels))
+                _stderr(redact(f"{task} on {model}: unparseable output ({e}); first 300 chars: {text[:300]!r}"))
                 if attempt < max_retries:
                     continue
                 break
+            except LLMUnavailable:
+                raise
+            except Exception as e:  # network errors, timeouts, empty/blocked responses
+                last_err = e
+                _log(TraceEntry(task, model, round(time.time() - t0, 1), False, prompt[:300], redact(f"{type(e).__name__}: {e}"[:300]), labels))
+                _stderr(redact(f"{task} on {model}: {type(e).__name__}: {str(e)[:400]}"))
+                break
+    _stderr(redact(f"{task}: all models failed, last error {last_err}"))
     raise LLMUnavailable(redact(f"All models failed for '{task}': {last_err}"))
