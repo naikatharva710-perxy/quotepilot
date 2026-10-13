@@ -642,7 +642,19 @@ def page_ask():
     fp = analyst.facts(df, vdf, ddf)
     for i, m in enumerate(S.chat):
         with st.chat_message(m["role"]):
-            st.markdown(m["content"])
+            if m.get("explain_failed"):
+                st.warning("The model's explanation step failed, so there is no written summary. The computed result, "
+                           "sources and exclusions below come from the data and do not depend on the model.")
+            elif m.get("content"):
+                st.markdown(m["content"])
+            if m.get("figures_unverified"):
+                st.warning("Could not verify these figures against the computed result: "
+                           + ", ".join(m["figures_unverified"]) + ". Treat them as unconfirmed; the table below is authoritative.")
+            elif m.get("figures_found"):
+                st.caption(f"Checked: all {len(m['figures_found'])} figures in this explanation appear in the computed result.")
+            if m.get("notes"):
+                st.markdown("**Not counted, and assumptions inside these numbers**  \n"
+                            + "\n".join(f"- {n}" for n in m["notes"]))
             if m.get("chart") and m.get("table") is not None:
                 ch = m["chart"]
                 try:
@@ -662,6 +674,12 @@ def page_ask():
                     st.dataframe(t, hide_index=True, width="stretch")
                     st.code(m.get("sql") or "", language="sql")
                     st.download_button("Export (CSV)", t.to_csv(index=False), f"answer_{i}.csv", key=f"ex_{i}")
+            if m.get("role") == "assistant" and m.get("table") is not None:
+                ev = m.get("evidence")
+                with st.expander("Sources for this answer" + (f" ({len(ev)} rows)" if ev else "")):
+                    st.caption(m.get("evidence_note") or "")
+                    if ev:
+                        st.dataframe(pd.DataFrame(ev), hide_index=True, width="stretch")
     if not S.chat:
         st.caption("Try one of these, or ask your own:")
     picked = None
@@ -676,10 +694,15 @@ def page_ask():
         S.chat.append({"role": "user", "content": q})
         with st.spinner("Working it out"):
             try:
-                out = analyst.ask(q, con, S.chat[:-1], fp)
-                S.chat.append({"role": "assistant", "content": out["answer"], "sql": out.get("sql"),
+                out = analyst.ask(q, con, S.chat[:-1], fp, df=df, discounts_df=ddf)
+                S.chat.append({"role": "assistant", "content": out["answer"] or "", "sql": out.get("sql"),
                                "table": out["table"].to_dict("records") if out.get("table") is not None else None,
-                               "chart": out.get("chart")})
+                               "chart": out.get("chart"),
+                               "evidence": out["evidence"].to_dict("records") if out.get("evidence") is not None else None,
+                               "evidence_note": out.get("evidence_note"), "notes": out.get("notes") or [],
+                               "figures_found": out.get("figures_found") or [],
+                               "figures_unverified": out.get("figures_unverified") or [],
+                               "explain_failed": out.get("explain_failed", False)})
                 log("Question asked", q)
             except Exception as e:
                 S.chat.append({"role": "assistant", "content": f"That failed: {e}. Try rephrasing."})
