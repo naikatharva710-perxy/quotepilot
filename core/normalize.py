@@ -37,6 +37,21 @@ def _fx(currency: str | None, a: Assumptions) -> tuple[float, str | None]:
     return float("nan"), f"Unknown currency '{currency}'"
 
 
+def _rate_from_quote(q: str | None, ply: int | None = None) -> float | None:
+    """Per-kg rate for this item's ply from the quoted text.
+    'Rs 42/kg for the 5-ply, 38 for the 3-ply' -> 42 for 5-ply, 38 for 3-ply, None for 7-ply."""
+    import re
+    if not q:
+        return None
+    by_ply = {int(p): float(r) for r, p in re.findall(r"(\d+(?:\.\d+)?)\s*(?:/\s*kg)?\s*for\s+the\s+(\d)\s*-?\s*ply", q, re.I)}
+    if by_ply:
+        return by_ply.get(ply) if ply is not None else None
+    if re.search(r"\d\s*-?\s*ply", q, re.I):
+        return None
+    m = re.search(r"(\d+(?:\.\d+)?)\s*/\s*kg", q, re.I)
+    return float(m.group(1)) if m else None
+
+
 def _same_vendor(a: str, b: str) -> bool:
     a, b = a.lower(), b.lower()
     return a in b or b in a or difflib.SequenceMatcher(None, a, b).ratio() > 0.7
@@ -64,6 +79,11 @@ def normalise(rfx: dict, extractions: dict[str, dict], history: pd.DataFrame, a:
             basis = ln.get("price_basis", "unclear")
             conf = float(ln.get("confidence") or 0)
             price = None
+            q_text = str(ln.get("source_quote") or "").lower()
+            if (basis == "per_kg" and val is None and _rate_from_quote(q_text, item.get("ply")) is None
+                    and "last year" in q_text):
+                basis = "reference_last_year"   # no per-kg rate for this ply; the vendor's catch-all is "same as last year"
+                flags.append("No per-kg rate quoted for this ply; treated as 'same as last year'")
             if not ln.get("quoted", True) and val is None and basis != "reference_last_year":
                 status = "MISSING"
                 flags.append(ln.get("uncertainty_reason") or "Not quoted")
@@ -78,6 +98,16 @@ def normalise(rfx: dict, extractions: dict[str, dict], history: pd.DataFrame, a:
                     status = "MISSING"
                     who = h["awarded_supplier"] if h else "nobody"
                     flags.append(f"Vendor said 'same as last year' but last year this line went to {who}; no price to carry over")
+            elif val is None and basis == "per_kg" and _rate_from_quote(ln.get("source_quote"), item.get("ply")) is not None:
+                # Reader saw a per-kg rate but left the value blank (seen live with a lite model).
+                rate = _rate_from_quote(ln.get("source_quote"), item.get("ply"))
+                w = item.get("est_weight_kg")
+                price = round(rate * float(w), 2)
+                method.append(f"Rate ₹{rate:g}/kg taken from the quoted text by rule (reader left it blank)")
+                method.append(f"× {w} kg estimated box weight (from spec)")
+                flags.append("Per-kg rate converted with our weight estimate; vendor's actual weight may differ")
+                status = "REVIEW"
+                val = rate
             elif val is None:
                 status = "MISSING"
                 flags.append(ln.get("uncertainty_reason") or "Price not readable")

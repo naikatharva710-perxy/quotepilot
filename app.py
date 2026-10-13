@@ -339,7 +339,7 @@ def page_send():
 
 def style_matrix(df: pd.DataFrame, value_col: str):
     piv = df.pivot_table(index=["line_id", "item"], columns="vendor", values=value_col, aggfunc="first")
-    piv = piv.reindex(columns=sorted(df.vendor.unique()))
+    piv = piv.reindex(columns=sorted(df.vendor.unique())).apply(pd.to_numeric, errors="coerce")
     status = {(r.line_id, r.vendor): r.status for r in df[["line_id", "vendor", "status"]].itertuples()}
     usable_min = df[df.usable].groupby("line_id")[value_col].min().to_dict()
     css = pd.DataFrame("", index=piv.index, columns=piv.columns)
@@ -483,7 +483,7 @@ def page_review():
     for _, r in q.head(40).iterrows():
         with st.container(border=True):
             a, b, c = st.columns([2.2, 1.2, 1.6])
-            a.markdown(f"**{r.line_id} · {r.item}**  \n{r.vendor}")
+            a.markdown(f"**{r.line_id} · {r['item']}**  \n{r.vendor}")
             a.markdown("<br>".join(f"<span class='qd-small'>• {f}</span>" for f in r["flags"]), unsafe_allow_html=True)
             b.markdown(f"**{inr(r.landed_price_inr)}** /pc  \n<span class='qd-small'>{lakh(r.value_at_stake) if pd.notna(r.value_at_stake) else '-'} a year</span>",
                        unsafe_allow_html=True)
@@ -506,7 +506,7 @@ def page_review():
     open_df = df[df.status.isin(["REVIEW", "MISSING"])]
     for vid, g in open_df.groupby("vendor_id"):
         vname = g.vendor.iloc[0]
-        issues = [f"{r.line_id} {r.item}: {'; '.join(r["flags"])}" for _, r in g.iterrows()]
+        issues = [f"{r.line_id} {r['item']}: {'; '.join(r['flags'])}" for _, r in g.iterrows()]
         with st.expander(f"{vname}: {len(issues)} open issues"):
             st.markdown("\n".join(f"- {i}" for i in issues[:15]))
             if st.button("Draft clarification email", key=f"cl_{vid}", disabled=not AI_ON):

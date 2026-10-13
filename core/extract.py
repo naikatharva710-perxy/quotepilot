@@ -78,6 +78,10 @@ Rules:
    - If the document states a global rule (e.g. "all rates per box, 1 box = 100 nos, unless otherwise mentioned"),
      apply it to every line it governs and record basis_pack_size; but respect per-line exceptions ("pads per piece").
    - "per 1000 pcs" -> per_1000. "Rs/kg" -> per_kg. "same as last year" -> reference_last_year with price_value=null.
+   - For per_kg, price_value is the rate per kg exactly as written (e.g. 42). Never leave it null just because the
+     box weight is not given: the system converts with its own weight estimate and flags it for review.
+   - If the vendor says the rest are "same as last year", lines not covered by any rate they quoted are
+     reference_last_year (price_value null), not per_kg.
    - A rate per kg that applies to a class of items (e.g. "42/kg for the 5-ply") applies only to lines of that class;
      if it is ambiguous whether it covers non-box items (partitions, pads, trays, sleeves), say so in uncertainty_reason
      and set confidence <= 0.6.
