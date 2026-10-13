@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import hashlib
 import io
 import json
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
@@ -678,8 +680,36 @@ def page_award():
     st.download_button("Export award pack (Excel)", buf.getvalue(), "award_pack.xlsx", type="primary")
 
 
+def saved_run_backup(path) -> dict | None:
+    """Read-only view of the saved AI run for backup: the exact bytes plus their SHA-256 and size.
+    Never writes, regenerates or re-serialises the file. Returns None if the file does not exist."""
+    try:
+        data = Path(path).read_bytes()
+    except FileNotFoundError:
+        return None
+    return {"bytes": data, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
+
+
+def saved_run_backup_section():
+    """Temporary: lets the owner download the server-written run before a reboot wipes it."""
+    st.markdown("### Back up the saved AI run")
+    try:
+        b = saved_run_backup(pipeline.CACHE)
+    except OSError as e:
+        st.error(f"Could not read data/cache/last_run.json: {type(e).__name__}"); return
+    if b is None:
+        st.info("No saved run on this server: data/cache/last_run.json does not exist. Nothing to download.")
+        return
+    st.caption("Downloads data/cache/last_run.json exactly as stored on the server. The file is only read, never changed. "
+               "The fingerprint and size below are computed from the same bytes the button serves.")
+    st.code(f"file    data/cache/last_run.json\nbytes   {b['size']}\nsha256  {b['sha256']}", language=None)
+    st.download_button("Download saved run (JSON)", b["bytes"], file_name="last_run.json",
+                       mime="application/json", key="dl_saved_run")
+
+
 def page_audit():
     st.markdown("# Assumptions and audit")
+    saved_run_backup_section()
     st.markdown("### Assumptions (edit and everything recomputes)")
     a, b, c = st.columns(3)
     usd = a.number_input("USD → INR", value=float(S.assume.usd_inr), step=0.25)
