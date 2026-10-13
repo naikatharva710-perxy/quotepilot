@@ -1,0 +1,31 @@
+line_id,item,size_mm,ply,printing,annual_qty_ly,awarded_supplier,unit_price_inr,uom
+L01,Shipper - Glucose biscuit 12 x 800g,400 x 300 x 250 mm,5,2-colour flexo,204000,Chakan Boxcraft Solutions,30.42,per piece
+L02,Shipper - Cream biscuit family pack x 10,450 x 320 x 280 mm,5,2-colour flexo,159000,Chakan Boxcraft Solutions,35.77,per piece
+L03,Shipper - Namkeen 200g x 24,380 x 260 x 220 mm,3,1-colour flexo,285000,Bhimthadi Corrugation Works,13.39,per piece
+L04,Shipper - Namkeen 400g x 12,400 x 280 x 240 mm,3,1-colour flexo,189000,Bhimthadi Corrugation Works,15.51,per piece
+L05,Shipper - Edible oil 1L bottle x 12,330 x 250 x 290 mm,5,2-colour flexo,136000,Chakan Boxcraft Solutions,24.61,per piece
+L06,Shipper - Edible oil 5L jar x 4,400 x 300 x 330 mm,7,2-colour flexo,55000,Chakan Boxcraft Solutions,52.37,per piece
+L07,Shipper - Edible oil 15L tin x 1,260 x 260 x 370 mm,7,1-colour flexo,35000,Chakan Boxcraft Solutions,38.21,per piece
+L08,Shipper - Spice 100g x 48,360 x 240 x 200 mm,3,1-colour flexo,139000,Bhimthadi Corrugation Works,11.48,per piece
+L09,Shipper - Spice 500g x 20,380 x 280 x 230 mm,5,1-colour flexo,84000,Chakan Boxcraft Solutions,25.43,per piece
+L10,Shipper - Tea 250g x 40,420 x 300 x 260 mm,5,2-colour flexo,93000,Chakan Boxcraft Solutions,32.11,per piece
+L11,Shipper - Tea 1kg x 12,400 x 300 x 280 mm,5,2-colour flexo,66000,Chakan Boxcraft Solutions,32.35,per piece
+L12,Shipper - Instant noodles 70g x 96,480 x 340 x 300 mm,3,2-colour flexo,227000,Bhimthadi Corrugation Works,23.33,per piece
+L13,Shipper - Ketchup 1kg bottle x 12,330 x 250 x 260 mm,5,2-colour flexo,108000,Chakan Boxcraft Solutions,23.86,per piece
+L14,Shipper - Jam 500g jar x 24,340 x 230 x 170 mm,5,1-colour flexo,69000,Chakan Boxcraft Solutions,17.18,per piece
+L15,E-com mailer - Small,250 x 200 x 100 mm,3,Plain,188000,Bhimthadi Corrugation Works,5.67,per piece
+L16,E-com mailer - Medium,350 x 250 x 150 mm,3,Plain,143000,Bhimthadi Corrugation Works,9.96,per piece
+L17,E-com mailer - Large,450 x 350 x 250 mm,5,Plain,79000,Chakan Boxcraft Solutions,35.59,per piece
+L18,Export shipper - Biscuit (4-colour),420 x 310 x 260 mm,7,4-colour flexo,27000,Chakan Boxcraft Solutions,52.21,per piece
+L19,Shipper - Atta 5kg x 4,420 x 300 x 300 mm,5,1-colour flexo,94000,Chakan Boxcraft Solutions,33.57,per piece
+L20,Shipper - Atta 10kg x 2,450 x 320 x 320 mm,7,1-colour flexo,42000,Chakan Boxcraft Solutions,59.3,per piece
+L21,Retail-ready box - Chocolate (4-colour),300 x 200 x 150 mm,3,4-colour flexo,154000,Chakan Boxcraft Solutions,9.38,per piece
+L22,Festive gift hamper box (4-colour),400 x 300 x 120 mm,5,4-colour flexo,22000,Chakan Boxcraft Solutions,24.48,per piece
+L23,"Partition - 12 cell, fits L05 oil shipper",330 x 250 x 270 mm,3,Plain,141000,Chakan Boxcraft Solutions,10.45,per piece
+L24,"Partition - 4 cell, fits L06 5L jar shipper",400 x 300 x 310 mm,3,Plain,53000,Chakan Boxcraft Solutions,4.23,per piece
+L25,"Partition - 12 cell, fits L13 ketchup shipper",330 x 250 x 240 mm,3,Plain,108000,Chakan Boxcraft Solutions,9.55,per piece
+L26,Layer pad 1200 x 1000 (pallet),1200 x 1000 mm,3,Plain,79000,Chakan Boxcraft Solutions,23.69,per piece
+L27,Layer pad 1000 x 800 (pallet),1000 x 800 mm,3,Plain,59000,Chakan Boxcraft Solutions,15.71,per piece
+L28,Die-cut display tray - Biscuit (4-colour),380 x 280 x 80 mm,5,4-colour flexo,47000,Chakan Boxcraft Solutions,11.87,per piece
+L29,Shelf-ready PDQ tray - Namkeen,400 x 300 x 100 mm,3,2-colour flexo,67000,Chakan Boxcraft Solutions,7.38,per piece
+L30,Wrap-around sleeve - Jam 12 jar pack,340 x 230 x 120 mm,3,2-colour flexo,81000,Chakan Boxcraft Solutions,3.6,per piece
