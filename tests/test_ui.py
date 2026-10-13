@@ -2,6 +2,7 @@
 import os
 import sys
 
+import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
@@ -33,12 +34,14 @@ def goto(at, page):
 
 def test_compare_grid_shows_dash_for_ambad_missing(app):
     at = goto(app, "Compare")
-    grid = at.dataframe[0].value
-    grid = grid.data if hasattr(grid, "data") else grid   # Styler -> its display data
+    el = at.dataframe[0]
+    assert el.proto.placeholder == "-"          # missing values render as '-', not 'None'
+    grid = el.value
+    grid = grid.data if hasattr(grid, "data") else grid
     for lid in ("L06", "L07", "L28"):
         row = grid.xs(lid, level="line_id").iloc[0]
-        assert row["Ambad Kraftline LLP"] == "-", (lid, row["Ambad Kraftline LLP"])
-    assert "None" not in grid.to_string()
+        assert pd.isna(row["Ambad Kraftline LLP"]), (lid, row["Ambad Kraftline LLP"])
+    assert all(pd.api.types.is_float_dtype(grid[c]) for c in grid.columns)   # numeric, so it sorts as numbers
 
 
 def test_review_bulk_button_excludes_ambiguous_and_logs_each_cell(app):
@@ -48,8 +51,11 @@ def test_review_bulk_button_excludes_ambiguous_and_logs_each_cell(app):
     per_kg = [m for m in chakan_md if "Per-kg rate converted" in m][0]
     assert not any(f"{lid}," in per_kg or per_kg.rstrip(".").endswith(lid) for lid in AMBIGUOUS_8), per_kg
     assert "need individual decisions and are not included" in per_kg
-    btn = [b for b in at.button if b.label == "Accept these 13"]
+    caps = [c.value for c in at.caption if "estimated box weight" in c.value]
+    assert caps and "not supplied or confirmed" in caps[0]
+    btn = [b for b in at.button if b.label == "Accept 13 at est. weights"]
     assert btn, labels
+    assert "estimated box weights" in btn[0].help and "not supplied or confirmed" in btn[0].help
     btn[0].click().run()
     assert not at.exception
     dec = at.session_state["decisions"]
@@ -58,6 +64,8 @@ def test_review_bulk_button_excludes_ambiguous_and_logs_each_cell(app):
     audit = at.session_state["audit"]
     bulk_logs = [a for a in audit if a["action"] == "Cell accept (bulk)"]
     assert len(bulk_logs) == 13 and all("source V5_file, line 8" in a["detail"] for a in bulk_logs)
+    assert all("estimated box weight" in a["detail"] and "not supplied or confirmed" in a["detail"] for a in bulk_logs)
+    assert all(d.get("via") == "bulk" for k, d in dec.items() if k[1] == "V5")
 
 
 def test_ambiguous_cells_show_individual_decision_chip(app):

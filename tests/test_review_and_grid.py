@@ -69,6 +69,7 @@ def test_bulk_accept_skips_ambiguous_and_accepts_eligible(data):
     # one log line per accepted cell, each with its source evidence
     assert len(logs) == len(CLEAR_PER_KG)
     assert all("source V5_file, line 8" in d for _, d in logs)
+    assert all("estimated box weight" in d and "not supplied or confirmed" in d for _, d in logs)
 
 
 def test_eligible_bulk_accept_confirms_cells_with_evidence_intact(data):
@@ -113,25 +114,54 @@ def test_other_held_back_cases(data):
 
 # ---------------------------------------------------------------- 2. empty-cell display
 
-def _app_matrix_display():
-    """Import matrix_display from app.py without running the Streamlit page."""
+def _app_grid_helpers():
+    """Load GRID_MISSING, matrix_display and style_matrix from app.py without running the Streamlit page."""
     import ast
     src = open(os.path.join(ROOT, "app.py")).read()
     tree = ast.parse(src)
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "matrix_display")
-    ns = {"pd": pd, "STATUS_COLOR": {"OK": "#DCEFE5", "CONFIRMED": "#C7E6D5", "REVIEW": "#F8EBCB",
-                                      "MISSING": "#F1F1EE", "REJECTED": "#F3DADA"}}
-    exec(compile(ast.Module([fn], []), "app.py", "exec"), ns)
-    return ns["matrix_display"]
+    keep = [n for n in tree.body
+            if (isinstance(n, ast.FunctionDef) and n.name in ("matrix_display", "style_matrix"))
+            or (isinstance(n, ast.Assign) and any(getattr(t, "id", "") in ("GRID_MISSING", "STATUS_COLOR") for t in n.targets))]
+    ns = {"pd": pd}
+    exec(compile(ast.Module(keep, []), "app.py", "exec"), ns)
+    return ns
+
+
+def _app_matrix_display():
+    return _app_grid_helpers()["matrix_display"]
 
 
 @pytest.mark.parametrize("lid", ["L06", "L07", "L28"])
 def test_ambad_missing_cells_display_dash(data, lid):
     _, _, _, df, _ = data
-    text, _ = _app_matrix_display()(df, "landed_price_inr")
-    row = text.xs(lid, level="line_id").iloc[0]
-    assert row["Ambad Kraftline LLP"] == "-"
-    assert "None" not in text.to_string() and "nan" not in text.to_string().lower()
+    h = _app_grid_helpers()
+    grid, _ = h["matrix_display"](df, "landed_price_inr")
+    assert pd.isna(grid.xs(lid, level="line_id").iloc[0]["Ambad Kraftline LLP"])   # blank in the data
+    html = h["style_matrix"](df, "landed_price_inr").to_html()
+    assert h["GRID_MISSING"] == "-"
+    assert "None" not in html and "nan" not in html.lower()
+    # the rendered row shows '-' in the Ambad column
+    styler = h["style_matrix"](df, "landed_price_inr")
+    ctx = styler._translate(False, False)
+    col = list(grid.columns).index("Ambad Kraftline LLP")
+    row = [i for i, (l, _) in enumerate(grid.index) if l == lid][0]
+    cell = [c for c in ctx["body"][row] if c.get("type") == "td"][col]
+    assert cell["display_value"] == "-"
+
+
+def test_grid_sorts_numerically_not_as_text(data):
+    """Regression: the grid used to hold formatted strings, so '3.67' sorted after '24.55'."""
+    _, _, _, df, _ = data
+    grid, _ = _app_matrix_display()(df, "landed_price_inr")
+    for v in grid.columns:
+        assert pd.api.types.is_float_dtype(grid[v]), (v, grid[v].dtype)
+    amb = grid["Ambad Kraftline LLP"].sort_values()        # what a header-click sort does: by value
+    vals = amb.dropna().tolist()
+    assert vals == sorted(vals)
+    assert vals.index(min(vals)) == 0 and min(vals) < 10 < max(vals)   # single-digit prices first, not after '24.55'
+    as_text = sorted(f"{x:,.2f}" for x in vals)
+    assert as_text != [f"{x:,.2f}" for x in vals], "fixture should contain values where text and numeric order differ"
+    assert amb.isna().sum() == 3   # the three Ambad gaps stay genuinely blank (NaN), never a string
 
 
 @pytest.mark.parametrize("lid", ["L06", "L07", "L28"])

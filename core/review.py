@@ -45,6 +45,14 @@ def blocked(reason) -> bool:
     return isinstance(reason, str) and bool(reason)
 
 
+def uses_estimated_weight(key: str) -> bool:
+    """Per-kg groups: the price is the vendor's per-kg rate × OUR estimated box weight, not a vendor-supplied weight."""
+    return str(key).lower().startswith("per-kg")
+
+
+ESTIMATED_WEIGHT_NOTE = "price uses our estimated box weight; the vendor has not supplied or confirmed it"
+
+
 def reason_key(flags) -> str:
     return flags[0].split(":")[0][:70] if flags else "Other"
 
@@ -72,14 +80,15 @@ def bulk_accept(q: pd.DataFrame, vendor_id: str, key: str, decisions: dict, log=
     q = annotate(q)
     sel = q[(q.vendor_id == vendor_id) & (q.reason_key == key)]
     accepted, skipped = [], []
+    caveat = f" ({ESTIMATED_WEIGHT_NOTE})" if uses_estimated_weight(key) else ""
     for r in sel.to_dict("records"):
         if blocked(r["bulk_block"]):
             skipped.append((r["line_id"], r["bulk_block"]))
             continue
         decisions[(r["line_id"], vendor_id)] = {"action": "accept", "value": r["unit_price_inr"], "via": "bulk",
-                                                "note": f"Bulk accept: {key}"}
+                                                "note": f"Bulk accept: {key}{caveat}"}
         accepted.append(r["line_id"])
         if log:
-            log("Cell accept (bulk)", f"{r['line_id']}/{r['vendor']} at ₹{r['unit_price_inr']:.2f}; "
+            log("Cell accept (bulk)", f"{r['line_id']}/{r['vendor']} at ₹{r['unit_price_inr']:.2f}{caveat}; "
                                       f"source {r.get('source_file')}, {r.get('source_ref')}: \"{str(r.get('source_quote') or '')[:80]}\"")
     return accepted, skipped

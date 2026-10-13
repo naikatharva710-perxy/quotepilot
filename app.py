@@ -34,7 +34,7 @@ h3 { font-weight: 700 !important; font-size: 1.1rem !important; }
 .qd-lede { font-size: 1.05rem; color: #46555B; max-width: 68ch; line-height: 1.55; }
 .qd-chip { display:inline-block; padding: 2px 10px; border-radius: 999px; font-size: 0.82rem; font-weight: 600; margin-right: 6px; }
 .ok { background:#DCEFE5; color:#1E6446; } .review { background:#F8EBCB; color:#7A5208; }
-.missing { background:#F3DADA; color:#8E2B2B; } .info { background:#E3E7EA; color:#33434A; }
+.missing { background:#F3DADA; color:#8E2B2B; } .absent { background:#F1F1EE; color:#5E6360; border:1px solid #DADBD6; } .info { background:#E3E7EA; color:#33434A; }
 .qd-stat { border-left: 4px solid #9A6631; padding: 4px 0 4px 12px; margin-bottom: 8px; }
 .qd-stat b { font-family: 'Archivo', sans-serif; font-size: 1.6rem; display:block; line-height: 1.1; }
 .qd-stat span { color:#56656B; font-size: 0.85rem; }
@@ -337,36 +337,40 @@ def page_send():
                 go("Compare")
 
 
+GRID_MISSING = "-"   # what a missing price looks like on screen; the data itself stays NaN
+
+
 def matrix_display(df: pd.DataFrame, value_col: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Display grid as text ('-' for missing) plus a matching CSS grid. Display only: df itself keeps NaN,
-    so calculations, analysis and exports never see the '-'."""
+    """Numeric grid (NaN for missing) plus a matching CSS grid. Keeping the values numeric lets the grid
+    sort and right-align them as numbers; the '-' is applied at display time only (Styler na_rep and
+    st.dataframe placeholder), so calculations, analysis and exports never see it.
+    Streamlit's grid renders background colour, text colour and bold from the CSS; it ignores italics
+    and borders, so neither is used."""
     piv = df.pivot_table(index=["line_id", "item"], columns="vendor", values=value_col, aggfunc="first", dropna=False)
     piv = piv.reindex(columns=sorted(df.vendor.unique()))
     piv = piv.reindex(pd.MultiIndex.from_frame(df[["line_id", "item"]].drop_duplicates().sort_values("line_id")))
+    grid = piv.apply(pd.to_numeric, errors="coerce").astype("float64")
     status = {(r.line_id, r.vendor): r.status for r in df[["line_id", "vendor", "status"]].itertuples()}
     usable_min = df[df.usable].groupby("line_id")[value_col].min().to_dict()
-    text = pd.DataFrame("-", index=piv.index, columns=piv.columns)
-    css = pd.DataFrame("", index=piv.index, columns=piv.columns)
-    for (lid, item) in piv.index:
-        for v in piv.columns:
-            val = pd.to_numeric(piv.at[(lid, item), v], errors="coerce")
+    css = pd.DataFrame("", index=grid.index, columns=grid.columns)
+    for (lid, item) in grid.index:
+        for v in grid.columns:
+            val = grid.at[(lid, item), v]
             s_ = status.get((lid, v))
-            if pd.notna(val):
-                text.at[(lid, item), v] = f"{val:,.2f}"
-            c = f"background-color:{STATUS_COLOR.get(s_, '#FFFFFF')}; text-align:right;"
+            c = f"background-color:{STATUS_COLOR.get(s_, '#FFFFFF')};"
             if s_ in ("OK", "CONFIRMED") and pd.notna(val) and abs(val - usable_min.get(lid, -1)) < 1e-6:
-                c += "font-weight:700; border:2px solid #9A6631;"
+                c += "font-weight:700;"
             if s_ == "REVIEW":
-                c += "font-style:italic; color:#6B4A0B;"
+                c += "color:#6B4A0B;"
             if pd.isna(val):
                 c += "color:#8A8F8C;"
             css.at[(lid, item), v] = c
-    return text, css
+    return grid, css
 
 
 def style_matrix(df: pd.DataFrame, value_col: str):
-    text, css = matrix_display(df, value_col)
-    return text.style.apply(lambda _: css, axis=None)
+    grid, css = matrix_display(df, value_col)
+    return grid.style.format("{:,.2f}", na_rep=GRID_MISSING).apply(lambda _: css, axis=None)
 
 
 def cell_inspector(df: pd.DataFrame):
@@ -430,10 +434,11 @@ def page_compare():
     st.markdown("### All vendors, same lines, same unit: ₹ per piece ex-GST")
     basis = st.segmented_control("Price shown", ["Landed (incl. freight)", "Unit (before freight)"], default="Landed (incl. freight)")
     col = "landed_price_inr" if basis != "Unit (before freight)" else "unit_price_inr"
-    st.markdown('<span class="qd-chip ok">usable</span><span class="qd-chip review">needs review (italic, not used in analysis)</span>'
-                '<span class="qd-chip missing">missing / rejected</span><span class="qd-small">Brown border: lowest usable price on the line.</span>',
+    st.markdown('<span class="qd-chip ok">usable</span><span class="qd-chip review">needs review (not used in analysis)</span>'
+                '<span class="qd-chip absent">missing (-)</span><span class="qd-chip missing">rejected</span>'
+                '<span class="qd-small">Bold: lowest usable price on the line.</span>',
                 unsafe_allow_html=True)
-    st.dataframe(style_matrix(df, col), width="stretch", height=560)
+    st.dataframe(style_matrix(df, col), width="stretch", height=560, placeholder=GRID_MISSING)
     st.download_button("Export comparison (CSV)", df.drop(columns=["bbox"]).to_csv(index=False), "comparison.csv")
     st.divider()
     cell_inspector(df)
@@ -482,10 +487,18 @@ def page_review():
         if len(groups):
             st.markdown("### Decide in bulk")
             for _, g in groups.iterrows():
-                cc = st.columns([3, 1])
+                cc = st.columns([2.4, 1.6])
                 held = f" {g.held_back} similar cells need individual decisions and are not included." if g.held_back else ""
+                est = review.uses_estimated_weight(g.reason_key)
                 cc[0].markdown(f"**{g.vendor}**: {g.n} cells, *{g.reason_key}*. {', '.join(g.line_ids)}.{held}")
-                if cc[1].button(f"Accept these {g.n}", key=f"bulk_{g.vendor_id}_{abs(hash(g.reason_key))}"):
+                if est:
+                    cc[0].caption("Each price is the vendor's per-kg rate × our estimated box weight from the RFx spec. "
+                                  "The vendor has not supplied or confirmed these weights. Accepting uses our estimate as-is; "
+                                  "ask the vendor for actual box weights before award on lines that matter.")
+                label = f"Accept {g.n} at est. weights" if est else f"Accept these {g.n}"
+                tip = ("Accepts these prices as converted with our estimated box weights. "
+                       "The vendor has not supplied or confirmed the weights.") if est else None
+                if cc[1].button(label, key=f"bulk_{g.vendor_id}_{abs(hash(g.reason_key))}", help=tip):
                     review.bulk_accept(q, g.vendor_id, g.reason_key, S.decisions, log)
                     st.rerun()
             st.markdown("### One by one")
