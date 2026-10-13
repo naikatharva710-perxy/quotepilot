@@ -63,6 +63,16 @@ def lakh(x: float) -> str:
     return f"₹{x/1e5:.1f} L"
 
 
+def vs_last_year(total: float, last_year: float, saving_pct: float) -> str:
+    """Spell out the direction: a signed percentage alone reads as a saving when it is a cost increase."""
+    diff = abs(total - last_year)
+    if abs(saving_pct) < 0.05:
+        return "About the same as last year on the same lines"
+    if saving_pct > 0:
+        return f"{lakh(diff)} ({saving_pct:.1f}%) cheaper than last year on the same lines"
+    return f"{lakh(diff)} ({abs(saving_pct):.1f}%) more expensive than last year on the same lines"
+
+
 # ------------------------------------------------------------------ state
 S = st.session_state
 if "init" not in S:
@@ -727,7 +737,7 @@ def page_award():
             st.markdown(f'<div class="qd-stat"><b>{lakh(s["total_inr"])}</b><span>{s["lines_covered"]} of {len(S.rfx["line_items"])} lines covered</span></div>',
                         unsafe_allow_html=True)
             if s["saving_vs_last_year_pct"] is not None:
-                st.caption(f"{s['saving_vs_last_year_pct']:+.1f}% vs last year on the same lines")
+                st.caption(vs_last_year(s["total_inr"], s["last_year_same_lines_inr"], s["saving_vs_last_year_pct"]))
             st.caption(s["note"])
             for d in s["discounts_applied"]:
                 st.caption(f"Discount applied: {d}")

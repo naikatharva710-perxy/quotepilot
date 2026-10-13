@@ -120,3 +120,27 @@ def test_ordinary_individual_decisions_have_no_estimated_weight_disclosure(app):
     # and the previous-price / source format is unchanged for all of them
     for e in (k, m, c, r):
         assert "; was ₹" in e["detail"] and "; source " in e["detail"]
+
+
+# ---------------------------------------------------------------- award card: direction of change vs last year
+
+def _vs_last_year():
+    import ast
+    tree = ast.parse(open(os.path.join(ROOT, "app.py")).read())
+    keep = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("vs_last_year", "lakh")]
+    ns = {}
+    exec(compile(ast.Module(keep, []), "app.py", "exec"), ns)
+    return ns["vs_last_year"]
+
+
+def test_award_card_says_more_expensive_when_cost_rises():
+    # cleared-vendors scenario on the demo run: ₹7,55,73,300 vs ₹7,28,35,500 last year, saving field -3.8
+    text = _vs_last_year()(75_573_300, 72_835_500, -3.8)
+    assert text == "₹27.4 L (3.8%) more expensive than last year on the same lines"
+    assert "-" not in text.split("(")[1]
+
+
+def test_award_card_says_cheaper_when_cost_falls_and_same_when_flat():
+    f = _vs_last_year()
+    assert f(72_133_600, 72_835_500, 1.0) == "₹7.0 L (1.0%) cheaper than last year on the same lines"
+    assert f(100.0, 100.0, 0.0) == "About the same as last year on the same lines"
