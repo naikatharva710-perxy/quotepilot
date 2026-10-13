@@ -4,12 +4,13 @@ Built for the Aerchain "Kill the Quote Spreadsheet" assignment.
 """
 from __future__ import annotations
 
+import base64
 import copy
 import datetime as dt
+import gzip
 import hashlib
 import io
 import json
-from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
@@ -268,6 +269,68 @@ def preview_doc(item: dict):
     st.download_button("Download original", data, file_name=name, key=f"dl_{item['vendor_id']}")
 
 
+# Verified demo run, kept in Streamlit Secrets (not in git) so it survives reboots. Pinned by fingerprint:
+# the hash below says nothing about the contents, but any other payload is refused.
+DEMO_RUN_SHA256 = "1a39b331062208f9101cc375df2bbe0b9ffc4f0b38c4f0f8a48603e6a7c7dcc4"
+DEMO_RUN_LABEL = "Saved demo run — 13 Oct 2026, 10:52"
+DEMO_RUN_KEYS = {"ran_at": str, "bid_date": str, "extractions": dict, "certificates": dict, "gates": dict, "errors": list}
+# Fields the app reads from each vendor's extraction and each quoted line (core/normalize.py, core/pipeline.py).
+_NUM = (int, float)
+_OPT_STR = (str, type(None))
+DEMO_VENDOR_KEYS = {"currency": str, "terms": dict, "lines": list, "questionnaire": list, "_source_file": str}
+DEMO_LINE_REQUIRED = {"rfx_line_id": str, "quoted": bool, "price_basis": str, "confidence": _NUM,
+                      "price_value": _NUM + (type(None),)}
+DEMO_LINE_OPTIONAL = {"price_currency": _OPT_STR, "basis_pack_size": (int, type(None)), "source_ref": _OPT_STR,
+                      "source_quote": _OPT_STR, "spec_deviation": _OPT_STR, "uncertainty_reason": _OPT_STR,
+                      "vendor_description": _OPT_STR, "bbox": (list, type(None))}
+
+
+def _typed(v, t) -> bool:
+    return isinstance(v, t) and not (isinstance(v, bool) and bool not in (t if isinstance(t, tuple) else (t,)))
+
+
+def demo_run_shape_ok(run) -> bool:
+    """Structure check for the demo run: top level, every vendor's extraction, every line and questionnaire answer."""
+    if not (isinstance(run, dict) and all(_typed(run.get(k), t) for k, t in DEMO_RUN_KEYS.items()) and run["extractions"]):
+        return False
+    for ex in run["extractions"].values():
+        if not (isinstance(ex, dict) and all(_typed(ex.get(k), t) for k, t in DEMO_VENDOR_KEYS.items()) and ex["lines"]):
+            return False
+        for ln in ex["lines"]:
+            if not (isinstance(ln, dict) and all(k in ln and _typed(ln[k], t) for k, t in DEMO_LINE_REQUIRED.items())
+                    and all(_typed(ln[k], t) for k, t in DEMO_LINE_OPTIONAL.items() if k in ln)):
+                return False
+        if not all(isinstance(q, dict) and isinstance(q.get("q_id"), str) for q in ex["questionnaire"]):
+            return False
+    return True
+
+
+def demo_run_from_secrets(secrets=None, expected_sha256: str = DEMO_RUN_SHA256) -> tuple[dict | None, str | None]:
+    """Return (run, problem). The run is returned only after decompression, fingerprint check and schema check,
+    and is never changed or written to disk. `problem` is a fixed message that never quotes the stored data;
+    (None, None) means no demo run is configured."""
+    try:
+        sec = st.secrets if secrets is None else secrets
+        blob = (sec.get("saved_run") or {}).get("gz_b64")
+    except Exception:
+        return None, None                      # no secrets configured at all (local runs, tests)
+    if not blob:
+        return None, None
+    try:
+        raw = gzip.decompress(base64.b64decode(str(blob).strip(), validate=True))
+    except Exception:
+        return None, "could not be decoded"
+    if hashlib.sha256(raw).hexdigest() != expected_sha256:
+        return None, "failed its integrity check"
+    try:
+        run = json.loads(raw)
+    except ValueError:
+        return None, "is not valid JSON"
+    if not demo_run_shape_ok(run):
+        return None, "does not have the expected structure"
+    return run, None
+
+
 def page_send():
     st.markdown("# Send and collect")
     if not S.rfx:
@@ -310,7 +373,11 @@ def page_send():
     st.divider()
     if S.get("run_errors"):
         st.error("The last AI read had problems:\n\n" + "\n".join(f"- {e}" for e in S.run_errors))
-    cached = pipeline.load_cache()
+    # Verified demo run first. A live read still opens directly and is saved to last_run.json,
+    # but it never replaces the demo run offered below.
+    demo, demo_problem = demo_run_from_secrets()
+    cached = demo or pipeline.load_cache()
+    cached_label = DEMO_RUN_LABEL if demo else (f"Last AI read on this server, {cached['ran_at']}" if cached else None)
     c1, c2 = st.columns([1, 1])
     with c1:
         st.markdown("### Read every reply with AI")
@@ -332,11 +399,14 @@ def page_send():
     with c2:
         if cached and set(cached.get("extractions", {})) >= {i["vendor_id"] for i in S.inbox}:
             st.markdown("### Or reuse the last AI read")
-            st.caption(f"A real run from {cached['ran_at']}, saved so the demo doesn't depend on free-tier rate limits. "
+            st.markdown(f"**{cached_label}**")
+            st.caption("A real AI read, saved so the demo doesn't depend on free-tier rate limits. "
                        "Same output format; you can re-read live any time.")
             if st.button("Load last AI read"):
-                S.run = cached; S.decisions = {}; log("Replies loaded", f"Saved AI run from {cached['ran_at']}")
+                S.run = cached; S.decisions = {}; log("Replies loaded", cached_label)
                 go("Compare")
+        if demo_problem:
+            st.caption(f"Saved demo run unavailable: it {demo_problem}.")
 
 
 GRID_MISSING = "-"   # what a missing price looks like on screen; the data itself stays NaN
@@ -680,36 +750,8 @@ def page_award():
     st.download_button("Export award pack (Excel)", buf.getvalue(), "award_pack.xlsx", type="primary")
 
 
-def saved_run_backup(path) -> dict | None:
-    """Read-only view of the saved AI run for backup: the exact bytes plus their SHA-256 and size.
-    Never writes, regenerates or re-serialises the file. Returns None if the file does not exist."""
-    try:
-        data = Path(path).read_bytes()
-    except FileNotFoundError:
-        return None
-    return {"bytes": data, "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}
-
-
-def saved_run_backup_section():
-    """Temporary: lets the owner download the server-written run before a reboot wipes it."""
-    st.markdown("### Back up the saved AI run")
-    try:
-        b = saved_run_backup(pipeline.CACHE)
-    except OSError as e:
-        st.error(f"Could not read data/cache/last_run.json: {type(e).__name__}"); return
-    if b is None:
-        st.info("No saved run on this server: data/cache/last_run.json does not exist. Nothing to download.")
-        return
-    st.caption("Downloads data/cache/last_run.json exactly as stored on the server. The file is only read, never changed. "
-               "The fingerprint and size below are computed from the same bytes the button serves.")
-    st.code(f"file    data/cache/last_run.json\nbytes   {b['size']}\nsha256  {b['sha256']}", language=None)
-    st.download_button("Download saved run (JSON)", b["bytes"], file_name="last_run.json",
-                       mime="application/json", key="dl_saved_run")
-
-
 def page_audit():
     st.markdown("# Assumptions and audit")
-    saved_run_backup_section()
     st.markdown("### Assumptions (edit and everything recomputes)")
     a, b, c = st.columns(3)
     usd = a.number_input("USD → INR", value=float(S.assume.usd_inr), step=0.25)
